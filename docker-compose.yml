@@ -1,0 +1,28 @@
+x-app: &app
+  build:
+    context: .
+    dockerfile: app/Dockerfile
+  depends_on:
+    - mosquitto
+  networks:
+    - mqtt
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - mqtt
+
+  alice:
+    <<: *app
+    command: sh -c "mqtt_bridge & sleep 1 && swipl -g main alice.pl"
+
+  bob:
+    <<: *app
+    command: sh -c "mqtt_bridge & sleep 1 && swipl -g main bob.pl"
+
+networks:
+  mqtt:
+    internal: true
