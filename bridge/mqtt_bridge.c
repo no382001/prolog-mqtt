@@ -6,6 +6,7 @@
  *
  * commands (Prolog -> bridge, tab-separated fields, newline-terminated):
  *   connect\t<id>\t<host>\t<port>\t<clientid>\t<keepalive>[\t<tls>\t<ca_cert>\t<client_cert>\t<client_key>]
+ *   log\t<0|1>
  *     tls: 0=plain, 1=TLS (verify server cert), 2=TLS (skip server cert verify)
  *     ca_cert, client_cert, client_key: file paths or empty string
  *   publish\t<id>\t<topic>\t<payload>\t<qos>\t<retain>
@@ -47,6 +48,13 @@ typedef struct {
 static conn_t g_conns[MAX_CONNS];
 static pthread_mutex_t g_conns_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_write_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_log = 1;
+
+#define LOG(...)                                                               \
+  do {                                                                         \
+    if (g_log)                                                                 \
+      fprintf(stderr, __VA_ARGS__);                                            \
+  } while (0)
 static FILE *g_out = NULL;
 
 static int conn_index(int id) {
@@ -261,6 +269,8 @@ static void cmd_connect(int id, const char *host, int port,
   MQTTAsync_connect(g_conns[idx].client, &opts);
 }
 
+static void cmd_log(int on) { g_log = on ? 1 : 0; }
+
 static void cmd_disconnect(int id) {
   pthread_mutex_lock(&g_conns_mu);
   int idx = conn_index(id);
@@ -357,6 +367,8 @@ static void dispatch_line(char *line) {
     cmd_unsubscribe(atoi(a[0]), a[1]);
   else if (!strcmp(cmd, "disconnect") && a[0])
     cmd_disconnect(atoi(a[0]));
+  else if (!strcmp(cmd, "log") && a[0])
+    cmd_log(atoi(a[0]));
 }
 
 int main(int argc, char **argv) {
@@ -378,13 +390,13 @@ int main(int argc, char **argv) {
     return 1;
   }
   listen(srv, 1);
-  fprintf(stderr, "mqtt_bridge: listening on :%d\n", port);
+  LOG("mqtt_bridge: listening on :%d\n", port);
 
   for (;;) {
     int fd = accept(srv, NULL, NULL);
     if (fd < 0)
       continue;
-    fprintf(stderr, "mqtt_bridge: prolog client connected\n");
+    LOG("mqtt_bridge: prolog client connected\n");
 
     g_out = fdopen(dup(fd), "w");
     FILE *in = fdopen(fd, "r");
@@ -398,7 +410,7 @@ int main(int argc, char **argv) {
         dispatch_line(line);
     }
 
-    fprintf(stderr, "mqtt_bridge: prolog client disconnected\n");
+    LOG("mqtt_bridge: prolog client disconnected\n");
     fclose(in);
 
     pthread_mutex_lock(&g_write_mu);

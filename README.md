@@ -105,6 +105,19 @@ mqtt:connect('broker.example.com', 8883,
 | `MQTT_BRIDGE_HOST` | `mqtt-bridge` | hostname of the bridge process |
 | `MQTT_BRIDGE_PORT` | `7883` | TCP port the bridge listens on |
 
+## Examples
+
+| File | Description |
+|------|-------------|
+| [`app/plain.pl`](app/plain.pl) | Plain TCP connection — connect, subscribe, publish, disconnect |
+| [`app/tls.pl`](app/tls.pl) | TLS with client certificate auth — reads certs from `/certs/` |
+| [`app/alice.pl`](app/alice.pl) | Demo: Alice side of the ping-pong exchange |
+| [`app/bob.pl`](app/bob.pl) | Demo: Bob side of the ping-pong exchange |
+
+`tls.pl` expects PEM files at `/certs/ca.pem`, `/certs/client.pem`, and
+`/certs/client.key`. The file includes `openssl` commands to generate
+self-signed test certificates.
+
 ## Running the demo
 
 ```sh

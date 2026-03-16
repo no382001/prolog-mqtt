@@ -25,7 +25,8 @@
     pub/4,
     sub/2,
     sub/3,
-    unsub/2
+    unsub/2,
+    bridge_log/1
 ]).
 
 :- use_module(library(socket)).
@@ -279,6 +280,14 @@ sub(Conn, Topic, Options) :-
 %  unsubscribe from Topic.
 unsub(Conn, Topic) :-
     send_unsubscribe(Conn, Topic).
+
+%! bridge_log(+Bool) is det.
+%  enable (true) or disable (false) stderr logging in the bridge process.
+bridge_log(Bool) :-
+    bridge_ensure,
+    bridge_stream(Stream),
+    (Bool = true -> V = 1 ; V = 0),
+    send_tab(Stream, [log, V]).
 
 option(Opt, Options) :-
     functor(Opt, Name, 1),
