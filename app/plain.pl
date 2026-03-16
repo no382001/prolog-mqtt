@@ -1,12 +1,3 @@
-/*  plain.pl -- minimal example: connect without TLS, publish, subscribe.
-
-    Usage:
-      swipl -g main plain.pl
-
-    Expects an MQTT broker reachable at mqtt-bridge:1883 (plain TCP).
-    Set MQTT_BRIDGE_HOST / MQTT_BRIDGE_PORT to override the bridge address.
-*/
-
 :- use_module(prolog/mqtt).
 
 :- multifile mqtt:on_message/2.

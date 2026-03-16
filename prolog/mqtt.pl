@@ -1,21 +1,3 @@
-/*  mqtt.pl -- prolog MQTT client library
-
-    connects to the mqtt_bridge helper process over a local TCP socket and
-    multiplexes any number of MQTT connections over it.
-
-    configuration via environment variables (with defaults):
-      MQTT_BRIDGE_HOST  hostname of the bridge process   (default: mqtt-bridge)
-      MQTT_BRIDGE_PORT  TCP port the bridge listens on   (default: 7883)
-
-    to receive events, add clauses to the hook predicates in your own file:
-
-      :- multifile mqtt:on_message/2.
-
-      mqtt:on_message(Conn, Data) :-
-          memberchk(payload(P), Data),
-          format("got: ~w~n", [P]).
-*/
-
 :- module(mqtt, [
     connect/2,
     connect/3,

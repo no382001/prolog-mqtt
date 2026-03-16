@@ -1,23 +1,3 @@
-/*  tls.pl -- example: connect with TLS and client certificate auth.
-
-    Usage:
-      swipl -g main tls.pl
-
-    Expects an MQTT broker reachable at mqtt-bridge:8883 (TLS).
-    Set MQTT_BRIDGE_HOST / MQTT_BRIDGE_PORT to override the bridge address.
-
-    Certificate paths below assume the standard Docker volume mount at /certs/.
-    Adjust CA_CERT / CLIENT_CERT / CLIENT_KEY to match your setup.
-
-    To generate self-signed test certificates:
-      openssl genrsa -out ca.key 2048
-      openssl req -x509 -new -key ca.key -days 3650 -out ca.pem -subj "/CN=test-ca"
-      openssl genrsa -out client.key 2048
-      openssl req -new -key client.key -out client.csr -subj "/CN=test-client"
-      openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key \
-          -CAcreateserial -days 3650 -out client.pem
-*/
-
 :- use_module(prolog/mqtt).
 
 :- multifile mqtt:on_message/2.

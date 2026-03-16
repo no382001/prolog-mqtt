@@ -39,6 +39,9 @@
 #define DEFAULT_PORT 7883
 #define LINE_BUF 65536
 
+#define nil NULL
+#define size(a) (sizeof(a) / sizeof((a)[0]))
+
 typedef struct {
   int id;
   MQTTAsync client;
@@ -55,7 +58,9 @@ static int g_log = 1;
     if (g_log)                                                                 \
       fprintf(stderr, __VA_ARGS__);                                            \
   } while (0)
-static FILE *g_out = NULL;
+static FILE *g_out = nil;
+
+static void send_event(const char *fmt, ...);
 
 static int conn_index(int id) {
   for (int i = 0; i < MAX_CONNS; i++)
@@ -78,6 +83,44 @@ static void conn_free_idx(int idx) {
   if (g_conns[idx].client)
     MQTTAsync_destroy(&g_conns[idx].client);
   memset(&g_conns[idx], 0, sizeof(g_conns[idx]));
+}
+
+/* resolve callback context to connection id (-1 if slot gone) */
+static int ctx_id(void *ctx) {
+  int idx = (int)(intptr_t)ctx;
+  pthread_mutex_lock(&g_conns_mu);
+  int id = g_conns[idx].used ? g_conns[idx].id : -1;
+  pthread_mutex_unlock(&g_conns_mu);
+  return id;
+}
+
+/* free slot from callback context; returns id, or -1 if already gone */
+static int ctx_free(void *ctx) {
+  int idx = (int)(intptr_t)ctx;
+  pthread_mutex_lock(&g_conns_mu);
+  if (!g_conns[idx].used) {
+    pthread_mutex_unlock(&g_conns_mu);
+    return -1;
+  }
+  int id = g_conns[idx].id;
+  conn_free_idx(idx);
+  pthread_mutex_unlock(&g_conns_mu);
+  return id;
+}
+
+/* look up a live connection by id; returns slot index and sets *out_client.
+ * on failure sends error event and returns -1. */
+static int lookup_conn(int id, MQTTAsync *out_client) {
+  pthread_mutex_lock(&g_conns_mu);
+  int idx = conn_index(id);
+  if (idx < 0) {
+    pthread_mutex_unlock(&g_conns_mu);
+    send_event("error(%d,'not connected').\n", id);
+    return -1;
+  }
+  *out_client = g_conns[idx].client;
+  pthread_mutex_unlock(&g_conns_mu);
+  return idx;
 }
 
 static void send_event(const char *fmt, ...) {
@@ -119,103 +162,63 @@ static void send_message(int id, char *topic, int topicLen, void *payload,
 
 static int messageArrived(void *ctx, char *topic, int topicLen,
                           MQTTAsync_message *msg) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
-
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_message(id, topic, topicLen, msg->payload, msg->payloadlen, msg->qos,
                  msg->retained);
-
   MQTTAsync_freeMessage(&msg);
   MQTTAsync_free(topic);
   return 1;
 }
 
 static void connectionLost(void *ctx, char *cause) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  if (!g_conns[idx].used) {
-    pthread_mutex_unlock(&g_conns_mu);
-    return;
-  }
-  int id = g_conns[idx].id;
-  conn_free_idx(idx);
-  pthread_mutex_unlock(&g_conns_mu);
-  send_event("disconnected(%d,'%s').\n", id, cause ? cause : "");
+  int id = ctx_free(ctx);
+  if (id >= 0)
+    send_event("disconnected(%d,'%s').\n", id, cause ? cause : "");
 }
 
 static void onDeliveryComplete(void *ctx, MQTTAsync_token token) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_event("published(%d,%d).\n", id, (int)token);
 }
 
 static void onConnect(void *ctx, MQTTAsync_successData *resp) {
   (void)resp;
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_event("connected(%d,0).\n", id);
 }
 
 static void onConnectFailure(void *ctx, MQTTAsync_failureData *resp) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  if (!g_conns[idx].used) {
-    pthread_mutex_unlock(&g_conns_mu);
-    return;
-  }
-  int id = g_conns[idx].id;
-  conn_free_idx(idx);
-  pthread_mutex_unlock(&g_conns_mu);
-  send_event("error(%d,'connect failed rc=%d').\n", id, resp ? resp->code : -1);
+  int id = ctx_free(ctx);
+  if (id >= 0)
+    send_event("error(%d,'connect failed rc=%d').\n", id,
+               resp ? resp->code : -1);
 }
 
 static void onDisconnect(void *ctx, MQTTAsync_successData *resp) {
   (void)resp;
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  if (!g_conns[idx].used) {
-    pthread_mutex_unlock(&g_conns_mu);
-    return;
-  }
-  int id = g_conns[idx].id;
-  conn_free_idx(idx);
-  pthread_mutex_unlock(&g_conns_mu);
-  send_event("disconnected(%d,'clean').\n", id);
+  int id = ctx_free(ctx);
+  if (id >= 0)
+    send_event("disconnected(%d,'clean').\n", id);
 }
 
 static void onSubscribe(void *ctx, MQTTAsync_successData *resp) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_event("subscribed(%d,%d).\n", id, resp ? (int)resp->token : 0);
 }
 
 static void onSubscribeFailure(void *ctx, MQTTAsync_failureData *resp) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_event("error(%d,'subscribe failed rc=%d').\n", id,
                resp ? resp->code : -1);
 }
 
 static void onUnsubscribe(void *ctx, MQTTAsync_successData *resp) {
-  int idx = (int)(intptr_t)ctx;
-  pthread_mutex_lock(&g_conns_mu);
-  int id = g_conns[idx].used ? g_conns[idx].id : -1;
-  pthread_mutex_unlock(&g_conns_mu);
+  int id = ctx_id(ctx);
   if (id >= 0)
     send_event("unsubscribed(%d,%d).\n", id, resp ? (int)resp->token : 0);
 }
@@ -241,7 +244,7 @@ static void cmd_connect(int id, const char *host, int port,
   snprintf(uri, sizeof(uri), "%s://%s:%d", tls ? "ssl" : "tcp", host, port);
 
   MQTTAsync_create(&g_conns[idx].client, uri, clientid,
-                   MQTTCLIENT_PERSISTENCE_NONE, NULL);
+                   MQTTCLIENT_PERSISTENCE_NONE, nil);
   MQTTAsync_setCallbacks(g_conns[idx].client, (void *)(intptr_t)idx,
                          connectionLost, messageArrived, onDeliveryComplete);
 
@@ -272,15 +275,10 @@ static void cmd_connect(int id, const char *host, int port,
 static void cmd_log(int on) { g_log = on ? 1 : 0; }
 
 static void cmd_disconnect(int id) {
-  pthread_mutex_lock(&g_conns_mu);
-  int idx = conn_index(id);
-  if (idx < 0) {
-    pthread_mutex_unlock(&g_conns_mu);
-    send_event("error(%d,'not connected').\n", id);
+  MQTTAsync client;
+  int idx = lookup_conn(id, &client);
+  if (idx < 0)
     return;
-  }
-  MQTTAsync client = g_conns[idx].client;
-  pthread_mutex_unlock(&g_conns_mu);
 
   MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
   opts.onSuccess = onDisconnect;
@@ -290,15 +288,10 @@ static void cmd_disconnect(int id) {
 
 static void cmd_publish(int id, const char *topic, const char *payload, int qos,
                         int retain) {
-  pthread_mutex_lock(&g_conns_mu);
-  int idx = conn_index(id);
-  if (idx < 0) {
-    pthread_mutex_unlock(&g_conns_mu);
-    send_event("error(%d,'not connected').\n", id);
+  MQTTAsync client;
+  int idx = lookup_conn(id, &client);
+  if (idx < 0)
     return;
-  }
-  MQTTAsync client = g_conns[idx].client;
-  pthread_mutex_unlock(&g_conns_mu);
 
   MQTTAsync_responseOptions ropts = MQTTAsync_responseOptions_initializer;
   ropts.context = (void *)(intptr_t)idx;
@@ -313,15 +306,10 @@ static void cmd_publish(int id, const char *topic, const char *payload, int qos,
 }
 
 static void cmd_subscribe(int id, const char *topic, int qos) {
-  pthread_mutex_lock(&g_conns_mu);
-  int idx = conn_index(id);
-  if (idx < 0) {
-    pthread_mutex_unlock(&g_conns_mu);
-    send_event("error(%d,'not connected').\n", id);
+  MQTTAsync client;
+  int idx = lookup_conn(id, &client);
+  if (idx < 0)
     return;
-  }
-  MQTTAsync client = g_conns[idx].client;
-  pthread_mutex_unlock(&g_conns_mu);
 
   MQTTAsync_responseOptions ropts = MQTTAsync_responseOptions_initializer;
   ropts.onSuccess = onSubscribe;
@@ -331,15 +319,10 @@ static void cmd_subscribe(int id, const char *topic, int qos) {
 }
 
 static void cmd_unsubscribe(int id, const char *topic) {
-  pthread_mutex_lock(&g_conns_mu);
-  int idx = conn_index(id);
-  if (idx < 0) {
-    pthread_mutex_unlock(&g_conns_mu);
-    send_event("error(%d,'not connected').\n", id);
+  MQTTAsync client;
+  int idx = lookup_conn(id, &client);
+  if (idx < 0)
     return;
-  }
-  MQTTAsync client = g_conns[idx].client;
-  pthread_mutex_unlock(&g_conns_mu);
 
   MQTTAsync_responseOptions ropts = MQTTAsync_responseOptions_initializer;
   ropts.onSuccess = onUnsubscribe;
@@ -347,28 +330,55 @@ static void cmd_unsubscribe(int id, const char *topic) {
   MQTTAsync_unsubscribe(client, topic, &ropts);
 }
 
+typedef void (*cmd_fn_t)(char **a);
+
+typedef struct {
+  const char *name;
+  int min_args; // a[min_args-1] must be non-null
+  cmd_fn_t fn;
+} cmd_entry_t;
+
+static void dispatch_connect(char **a) {
+  cmd_connect(atoi(a[0]), a[1], atoi(a[2]), a[3], atoi(a[4]),
+              a[5] ? atoi(a[5]) : 0, a[6] ? a[6] : "", a[7] ? a[7] : "",
+              a[8] ? a[8] : "");
+}
+static void dispatch_publish(char **a) {
+  cmd_publish(atoi(a[0]), a[1], a[2], atoi(a[3]), atoi(a[4]));
+}
+static void dispatch_subscribe(char **a) {
+  cmd_subscribe(atoi(a[0]), a[1], atoi(a[2]));
+}
+static void dispatch_unsubscribe(char **a) {
+  cmd_unsubscribe(atoi(a[0]), a[1]);
+}
+static void dispatch_disconnect(char **a) { cmd_disconnect(atoi(a[0])); }
+static void dispatch_log(char **a) { cmd_log(atoi(a[0])); }
+
+static const cmd_entry_t cmd_table[] = {
+    {"connect", 5, dispatch_connect},
+    {"publish", 5, dispatch_publish},
+    {"subscribe", 3, dispatch_subscribe},
+    {"unsubscribe", 2, dispatch_unsubscribe},
+    {"disconnect", 1, dispatch_disconnect},
+    {"log", 1, dispatch_log},
+};
+
 static void dispatch_line(char *line) {
   char *cmd = strtok(line, "\t");
   if (!cmd)
     return;
   char *a[9] = {0};
   for (int i = 0; i < 9; i++)
-    a[i] = strtok(NULL, "\t");
+    a[i] = strtok(nil, "\t");
 
-  if (!strcmp(cmd, "connect") && a[4])
-    cmd_connect(atoi(a[0]), a[1], atoi(a[2]), a[3], atoi(a[4]),
-                a[5] ? atoi(a[5]) : 0, a[6] ? a[6] : "", a[7] ? a[7] : "",
-                a[8] ? a[8] : "");
-  else if (!strcmp(cmd, "publish") && a[4])
-    cmd_publish(atoi(a[0]), a[1], a[2], atoi(a[3]), atoi(a[4]));
-  else if (!strcmp(cmd, "subscribe") && a[2])
-    cmd_subscribe(atoi(a[0]), a[1], atoi(a[2]));
-  else if (!strcmp(cmd, "unsubscribe") && a[1])
-    cmd_unsubscribe(atoi(a[0]), a[1]);
-  else if (!strcmp(cmd, "disconnect") && a[0])
-    cmd_disconnect(atoi(a[0]));
-  else if (!strcmp(cmd, "log") && a[0])
-    cmd_log(atoi(a[0]));
+  for (size_t i = 0; i < size(cmd_table); i++) {
+    if (!strcmp(cmd, cmd_table[i].name)) {
+      if (a[cmd_table[i].min_args - 1])
+        cmd_table[i].fn(a);
+      return;
+    }
+  }
 }
 
 int main(int argc, char **argv) {
@@ -393,7 +403,7 @@ int main(int argc, char **argv) {
   LOG("mqtt_bridge: listening on :%d\n", port);
 
   for (;;) {
-    int fd = accept(srv, NULL, NULL);
+    int fd = accept(srv, nil, nil);
     if (fd < 0)
       continue;
     LOG("mqtt_bridge: prolog client connected\n");
@@ -416,7 +426,7 @@ int main(int argc, char **argv) {
     pthread_mutex_lock(&g_write_mu);
     if (g_out) {
       fclose(g_out);
-      g_out = NULL;
+      g_out = nil;
     }
     pthread_mutex_unlock(&g_write_mu);
 
