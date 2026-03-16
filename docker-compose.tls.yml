@@ -1,0 +1,24 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./mosquitto-tls.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./certs:/mosquitto/certs:ro
+    networks:
+      - mqtt
+
+  tls-demo:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    depends_on:
+      - mosquitto
+    networks:
+      - mqtt
+    volumes:
+      - ./certs:/certs:ro
+    command: sh -c "mqtt_bridge & sleep 1 && swipl -g main tls.pl"
+
+networks:
+  mqtt:
+    internal: true

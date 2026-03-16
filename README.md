@@ -126,3 +126,24 @@ docker compose up --build
 
 Starts Mosquitto, Alice, and Bob. Alice sends a `ping` to Bob; they echo it
 back and forth 10 times, then stop.
+
+## Running the TLS demo
+
+Generate test certificates once:
+
+```sh
+sh certs/gen-certs.sh
+```
+
+Then run:
+
+```sh
+docker compose -f docker-compose.tls.yml up --build
+```
+
+This starts Mosquitto with a TLS listener on port 8883 with mutual certificate
+auth required, then runs [`app/tls.pl`](app/tls.pl) against it. The app
+connects with its client certificate, subscribes to `example/topic`, publishes
+`hello over TLS` to that topic, receives it back via the `on_message` hook, and
+disconnects. Both Mosquitto and the app receive the generated certs from
+`certs/` via read-only volume mounts.
