@@ -7,70 +7,69 @@
       MQTT_BRIDGE_HOST  hostname of the bridge process   (default: mqtt-bridge)
       MQTT_BRIDGE_PORT  TCP port the bridge listens on   (default: 7883)
 
-    to receive events, add clauses to the hook predicates in your own file and
-    declare them multifile there, e.g.
+    to receive events, add clauses to the hook predicates in your own file:
 
-      :- multifile mqtt_hook_on_message/2.
+      :- multifile mqtt:on_message/2.
 
-      mqtt_hook_on_message(Conn, Data) :-
+      mqtt:on_message(Conn, Data) :-
           memberchk(payload(P), Data),
           format("got: ~w~n", [P]).
 */
 
 :- module(mqtt, [
-    mqtt_connect/2,
-    mqtt_connect/3,
-    mqtt_connect/4,
-    mqtt_disconnect/1,
-    mqtt_pub/3,
-    mqtt_pub/4,
-    mqtt_sub/2,
-    mqtt_sub/3,
-    mqtt_unsub/2
+    connect/2,
+    connect/3,
+    connect/4,
+    disconnect/1,
+    pub/3,
+    pub/4,
+    sub/2,
+    sub/3,
+    unsub/2
 ]).
 
 :- use_module(library(socket)).
 
-%! mqtt_hook_on_connect(+Conn, +Data) is semidet.
-%  called when an MQTT connection is established (not waited on by mqtt_connect/4).
+%! mqtt:on_connect(+Conn, +Data) is semidet.
+%  called when an MQTT connection is established (not waited on by connect/4).
 %  Data = [rc(RC)] where RC is 0 on success.
-:- multifile mqtt_hook_on_connect/2.
+:- multifile on_connect/2.
 
-%! mqtt_hook_on_disconnect(+Conn, +Data) is semidet.
+%! mqtt:on_disconnect(+Conn, +Data) is semidet.
 %  called when an MQTT connection drops unexpectedly.
 %  Data = [cause(Cause)].
-:- multifile mqtt_hook_on_disconnect/2.
+:- multifile on_disconnect/2.
 
-%! mqtt_hook_on_message(+Conn, +Data) is semidet.
+%! mqtt:on_message(+Conn, +Data) is semidet.
 %  called for every incoming MQTT PUBLISH.
 %  Data = [topic(Topic), payload(Payload), qos(QoS), retain(Retain)].
-:- multifile mqtt_hook_on_message/2.
+:- multifile on_message/2.
 
-%! mqtt_hook_on_publish(+Conn, +Data) is semidet.
+%! mqtt:on_publish(+Conn, +Data) is semidet.
 %  called when the broker confirms delivery of a published message.
 %  Data = [token(Token)].
-:- multifile mqtt_hook_on_publish/2.
+:- multifile on_publish/2.
 
-%! mqtt_hook_on_subscribe(+Conn, +Data) is semidet.
+%! mqtt:on_subscribe(+Conn, +Data) is semidet.
 %  called when a subscribe request is acknowledged by the broker.
 %  Data = [token(Token)].
-:- multifile mqtt_hook_on_subscribe/2.
+:- multifile on_subscribe/2.
 
-%! mqtt_hook_on_unsubscribe(+Conn, +Data) is semidet.
+%! mqtt:on_unsubscribe(+Conn, +Data) is semidet.
 %  called when an unsubscribe request is acknowledged by the broker.
 %  Data = [token(Token)].
-:- multifile mqtt_hook_on_unsubscribe/2.
+:- multifile on_unsubscribe/2.
 
-%! mqtt_hook_on_error(+Conn, +Data) is semidet.
+%! mqtt:on_error(+Conn, +Data) is semidet.
 %  called on asynchronous errors not tied to a waiting caller.
 %  Data = [description(Desc)].
-:- multifile mqtt_hook_on_error/2.
+:- multifile on_error/2.
 
 :- dynamic
     bridge_stream/1,   % write side of the bridge TCP socket
     bridge_in/1,       % read side, owned by the event_loop thread
     next_id/1,
-    waiting/2.         % waiting(Key, Thread) -- caller blocked in mqtt_connect/disconnect
+    waiting/2.         % waiting(Key, Thread) -- caller blocked in connect/disconnect
 
 :- volatile bridge_stream/1, bridge_in/1.
 
@@ -122,32 +121,32 @@ event_loop_r(In) :-
 dispatch(connected(Id, RC)) :-
     (   retract(waiting(Id, Caller))
     ->  thread_send_message(Caller, connected(Id, RC))
-    ;   ignore(user:mqtt_hook_on_connect(Id, [rc(RC)]))
+    ;   ignore(on_connect(Id, [rc(RC)]))
     ).
 
 dispatch(disconnected(Id, Cause)) :-
     (   retract(waiting(disconnect(Id), Caller))
     ->  thread_send_message(Caller, disconnected(Id, Cause))
-    ;   ignore(user:mqtt_hook_on_disconnect(Id, [cause(Cause)]))
+    ;   ignore(on_disconnect(Id, [cause(Cause)]))
     ).
 
 dispatch(message(Id, Topic, Payload, QoS, Retain)) :-
-    ignore(user:mqtt_hook_on_message(Id,
+    ignore(on_message(Id,
         [topic(Topic), payload(Payload), qos(QoS), retain(Retain)])).
 
 dispatch(published(Id, Token)) :-
-    ignore(user:mqtt_hook_on_publish(Id, [token(Token)])).
+    ignore(on_publish(Id, [token(Token)])).
 
 dispatch(subscribed(Id, Token)) :-
-    ignore(user:mqtt_hook_on_subscribe(Id, [token(Token)])).
+    ignore(on_subscribe(Id, [token(Token)])).
 
 dispatch(unsubscribed(Id, Token)) :-
-    ignore(user:mqtt_hook_on_unsubscribe(Id, [token(Token)])).
+    ignore(on_unsubscribe(Id, [token(Token)])).
 
 dispatch(error(Id, Desc)) :-
     (   retract(waiting(Id, Caller))
     ->  thread_send_message(Caller, error(Id, Desc))
-    ;   ignore(user:mqtt_hook_on_error(Id, [description(Desc)]))
+    ;   ignore(on_error(Id, [description(Desc)]))
     ).
 
 dispatch(_).  % ignore unknown events
@@ -159,9 +158,10 @@ send_tab(Stream, Parts) :-
         flush_output(Stream)
     )).
 
-send_connect(Id, Host, Port, ClientId, Keepalive) :-
+send_connect(Id, Host, Port, ClientId, Keepalive, TlsMode, CaCert, ClientCert, ClientKey) :-
     bridge_stream(Stream),
-    send_tab(Stream, [connect, Id, Host, Port, ClientId, Keepalive]).
+    send_tab(Stream, [connect, Id, Host, Port, ClientId, Keepalive,
+                      TlsMode, CaCert, ClientCert, ClientKey]).
 
 send_publish(Id, Topic, Payload, QoS, Retain) :-
     bridge_stream(Stream),
@@ -184,34 +184,47 @@ alloc_id(Id) :-
     Next is Id + 1,
     assertz(next_id(Next)).
 
-%! mqtt_connect(+Host, -Conn) is semidet.
+%! connect(+Host, -Conn) is semidet.
 %  connect to an MQTT broker at Host on port 1883.
 %  blocks until the broker acknowledges the connection (up to 15 s).
-mqtt_connect(Host, Conn) :-
-    mqtt_connect(Host, 1883, Conn).
+connect(Host, Conn) :-
+    connect(Host, 1883, Conn).
 
-%! mqtt_connect(+Host, +Port, -Conn) is semidet.
+%! connect(+Host, +Port, -Conn) is semidet.
 %  connect to an MQTT broker at Host:Port.
-mqtt_connect(Host, Port, Conn) :-
-    mqtt_connect(Host, Port, [], Conn).
+connect(Host, Port, Conn) :-
+    connect(Host, Port, [], Conn).
 
-%! mqtt_connect(+Host, +Port, +Options, -Conn) is semidet.
+%! connect(+Host, +Port, +Options, -Conn) is semidet.
 %  connect to an MQTT broker with options.
 %
 %  Options:
-%    client_id(+Atom)   MQTT client identifier  (default: mqtt_client)
-%    keepalive(+Int)    keepalive interval in s  (default: 60)
+%    client_id(+Atom)     MQTT client identifier          (default: mqtt_client)
+%    keepalive(+Int)      keepalive interval in s          (default: 60)
+%    tls(+Bool)           enable TLS                       (default: false)
+%    verify(+Bool)        verify server certificate        (default: true when TLS)
+%    ca_cert(+Path)       CA certificate file (PEM)        (default: system trust store)
+%    client_cert(+Path)   client certificate file (PEM)    (default: none)
+%    client_key(+Path)    client private key file (PEM)    (default: none)
 %
 %  Conn is an opaque integer identifying this connection for subsequent calls.
-mqtt_connect(Host, Port, Options, Conn) :-
+connect(Host, Port, Options, Conn) :-
     bridge_ensure,
     alloc_id(Id),
     Conn = Id,
     (option(client_id(CId), Options) -> true ; CId = 'mqtt_client'),
     (option(keepalive(Ka),  Options) -> true ; Ka  = 60),
+    (option(tls(true),      Options) -> UseTls = true ; UseTls = false),
+    (   UseTls = true
+    ->  (option(verify(false), Options) -> TlsMode = 2 ; TlsMode = 1)
+    ;   TlsMode = 0
+    ),
+    (option(ca_cert(CaCert),       Options) -> true ; CaCert = ''),
+    (option(client_cert(CCert),    Options) -> true ; CCert  = ''),
+    (option(client_key(CKey),      Options) -> true ; CKey   = ''),
     thread_self(Me),
     assertz(waiting(Id, Me)),
-    send_connect(Id, Host, Port, CId, Ka),
+    send_connect(Id, Host, Port, CId, Ka, TlsMode, CaCert, CCert, CKey),
     (   thread_get_message(Me, Reply, [timeout(15)])
     ->  (   Reply = connected(Id, 0) -> true
         ;   retractall(waiting(Id, _)), fail
@@ -219,10 +232,10 @@ mqtt_connect(Host, Port, Options, Conn) :-
     ;   retractall(waiting(Id, _)), fail
     ).
 
-%! mqtt_disconnect(+Conn) is det.
+%! disconnect(+Conn) is det.
 %  gracefully disconnect from the broker.
 %  blocks until the broker acknowledges the disconnect (up to 10 s).
-mqtt_disconnect(Conn) :-
+disconnect(Conn) :-
     thread_self(Me),
     assertz(waiting(disconnect(Conn), Me)),
     send_disconnect(Conn),
@@ -231,40 +244,40 @@ mqtt_disconnect(Conn) :-
     ;   retractall(waiting(disconnect(Conn), _))
     ).
 
-%! mqtt_pub(+Conn, +Topic, +Payload) is det.
+%! pub(+Conn, +Topic, +Payload) is det.
 %  publish Payload to Topic with QoS 0, no retain.
-mqtt_pub(Conn, Topic, Payload) :-
-    mqtt_pub(Conn, Topic, Payload, []).
+pub(Conn, Topic, Payload) :-
+    pub(Conn, Topic, Payload, []).
 
-%! mqtt_pub(+Conn, +Topic, +Payload, +Options) is det.
+%! pub(+Conn, +Topic, +Payload, +Options) is det.
 %  publish Payload to Topic.
 %
 %  Options:
 %    qos(+Int)       QoS level 0, 1, or 2  (default: 0)
 %    retain(+Bool)   set the retain flag   (default: false)
-mqtt_pub(Conn, Topic, Payload, Options) :-
+pub(Conn, Topic, Payload, Options) :-
     (option(qos(QoS),     Options) -> true ; QoS = 0),
     (option(retain(true), Options) -> Retain = 1 ; Retain = 0),
     send_publish(Conn, Topic, Payload, QoS, Retain).
 
-%! mqtt_sub(+Conn, +Topic) is det.
+%! sub(+Conn, +Topic) is det.
 %  subscribe to Topic with QoS 0.
-%  incoming messages are delivered via mqtt_hook_on_message/2.
-mqtt_sub(Conn, Topic) :-
-    mqtt_sub(Conn, Topic, []).
+%  incoming messages are delivered via mqtt:on_message/2.
+sub(Conn, Topic) :-
+    sub(Conn, Topic, []).
 
-%! mqtt_sub(+Conn, +Topic, +Options) is det.
+%! sub(+Conn, +Topic, +Options) is det.
 %  subscribe to Topic.
 %
 %  Options:
 %    qos(+Int)   QoS level 0, 1, or 2  (default: 0)
-mqtt_sub(Conn, Topic, Options) :-
+sub(Conn, Topic, Options) :-
     (option(qos(QoS), Options) -> true ; QoS = 0),
     send_subscribe(Conn, Topic, QoS).
 
-%! mqtt_unsub(+Conn, +Topic) is det.
+%! unsub(+Conn, +Topic) is det.
 %  unsubscribe from Topic.
-mqtt_unsub(Conn, Topic) :-
+unsub(Conn, Topic) :-
     send_unsubscribe(Conn, Topic).
 
 option(Opt, Options) :-

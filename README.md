@@ -17,38 +17,86 @@ Backed by a small C bridge process that wraps the Paho MQTT C library.
 `mqtt_bridge` (built from `bridge/mqtt_bridge.c` against the Paho MQTT C library)
 runs as a sidecar process and routes MQTT traffic over a local TCP socket.
 `prolog/mqtt.pl` connects to that socket and exposes the MQTT operations as
-ordinary Prolog predicates.
+ordinary Prolog predicates under the `mqtt:` module namespace.
 
 ## Prolog API
 
 ```prolog
 :- use_module(prolog/mqtt).
 
-mqtt_connect(+Host, -Conn)
-mqtt_connect(+Host, +Port, -Conn)
-mqtt_connect(+Host, +Port, +Options, -Conn)   % options: client_id/1, keepalive/1
-mqtt_disconnect(+Conn)
-mqtt_pub(+Conn, +Topic, +Payload)
-mqtt_pub(+Conn, +Topic, +Payload, +Options)   % options: qos/1, retain/1
-mqtt_sub(+Conn, +Topic)
-mqtt_sub(+Conn, +Topic, +Options)             % options: qos/1
-mqtt_unsub(+Conn, +Topic)
+mqtt:connect(+Host, -Conn)
+mqtt:connect(+Host, +Port, -Conn)
+mqtt:connect(+Host, +Port, +Options, -Conn)
+mqtt:disconnect(+Conn)
+mqtt:pub(+Conn, +Topic, +Payload)
+mqtt:pub(+Conn, +Topic, +Payload, +Options)
+mqtt:sub(+Conn, +Topic)
+mqtt:sub(+Conn, +Topic, +Options)
+mqtt:unsub(+Conn, +Topic)
 ```
 
-Incoming events are delivered via multifile hook predicates:
+### connect/4 options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `client_id(+Atom)` | `mqtt_client` | MQTT client identifier |
+| `keepalive(+Int)` | `60` | keepalive interval in seconds |
+| `tls(+Bool)` | `false` | enable TLS |
+| `verify(+Bool)` | `true` | verify server certificate (when TLS) |
+| `ca_cert(+Path)` | system store | CA certificate file (PEM) |
+| `client_cert(+Path)` | none | client certificate file (PEM) |
+| `client_key(+Path)` | none | client private key file (PEM) |
+
+### pub/4 options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `qos(+Int)` | `0` | QoS level 0, 1, or 2 |
+| `retain(+Bool)` | `false` | set the retain flag |
+
+### sub/3 options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `qos(+Int)` | `0` | QoS level 0, 1, or 2 |
+
+### Event hooks
+
+Incoming events are delivered via multifile hook predicates in the `mqtt` module:
 
 ```prolog
-:- multifile mqtt_hook_on_message/2.
+:- multifile mqtt:on_message/2.
 
-mqtt_hook_on_message(Conn, Data) :-
+mqtt:on_message(Conn, Data) :-
     memberchk(topic(Topic), Data),
     memberchk(payload(Payload), Data),
     format("~w: ~w~n", [Topic, Payload]).
 ```
 
-Available hooks: `mqtt_hook_on_connect/2`, `mqtt_hook_on_disconnect/2`,
-`mqtt_hook_on_message/2`, `mqtt_hook_on_publish/2`, `mqtt_hook_on_subscribe/2`,
-`mqtt_hook_on_unsubscribe/2`, `mqtt_hook_on_error/2`.
+Available hooks: `mqtt:on_connect/2`, `mqtt:on_disconnect/2`,
+`mqtt:on_message/2`, `mqtt:on_publish/2`, `mqtt:on_subscribe/2`,
+`mqtt:on_unsubscribe/2`, `mqtt:on_error/2`.
+
+### TLS example
+
+```prolog
+mqtt:connect('broker.example.com', 8883,
+    [ client_id(myservice),
+      tls(true),
+      ca_cert('/etc/ssl/certs/ca.pem')
+    ], Conn).
+```
+
+For mutual TLS (client certificate authentication):
+
+```prolog
+mqtt:connect('broker.example.com', 8883,
+    [ tls(true),
+      ca_cert('/certs/ca.pem'),
+      client_cert('/certs/client.pem'),
+      client_key('/certs/client.key')
+    ], Conn).
+```
 
 ## Configuration
 

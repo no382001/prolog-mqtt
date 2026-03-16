@@ -5,7 +5,9 @@
  * over it using integer connection IDs.
  *
  * commands (Prolog -> bridge, tab-separated fields, newline-terminated):
- *   connect\t<id>\t<host>\t<port>\t<clientid>\t<keepalive>
+ *   connect\t<id>\t<host>\t<port>\t<clientid>\t<keepalive>[\t<tls>\t<ca_cert>\t<client_cert>\t<client_key>]
+ *     tls: 0=plain, 1=TLS (verify server cert), 2=TLS (skip server cert verify)
+ *     ca_cert, client_cert, client_key: file paths or empty string
  *   publish\t<id>\t<topic>\t<payload>\t<qos>\t<retain>
  *   subscribe\t<id>\t<topic>\t<qos>
  *   unsubscribe\t<id>\t<topic>
@@ -211,7 +213,9 @@ static void onUnsubscribe(void *ctx, MQTTAsync_successData *resp) {
 }
 
 static void cmd_connect(int id, const char *host, int port,
-                        const char *clientid, int keepalive) {
+                        const char *clientid, int keepalive, int tls,
+                        const char *ca_cert, const char *client_cert,
+                        const char *client_key) {
   pthread_mutex_lock(&g_conns_mu);
   if (conn_index(id) >= 0) {
     pthread_mutex_unlock(&g_conns_mu);
@@ -226,7 +230,7 @@ static void cmd_connect(int id, const char *host, int port,
   }
 
   char uri[256];
-  snprintf(uri, sizeof(uri), "tcp://%s:%d", host, port);
+  snprintf(uri, sizeof(uri), "%s://%s:%d", tls ? "ssl" : "tcp", host, port);
 
   MQTTAsync_create(&g_conns[idx].client, uri, clientid,
                    MQTTCLIENT_PERSISTENCE_NONE, NULL);
@@ -239,6 +243,19 @@ static void cmd_connect(int id, const char *host, int port,
   opts.onSuccess = onConnect;
   opts.onFailure = onConnectFailure;
   opts.context = (void *)(intptr_t)idx;
+
+  MQTTAsync_SSLOptions ssl = MQTTAsync_SSLOptions_initializer;
+  if (tls) {
+    ssl.enableServerCertAuth = (tls == 1) ? 1 : 0;
+    ssl.verify = (tls == 1) ? 1 : 0;
+    if (ca_cert && *ca_cert)
+      ssl.trustStore = ca_cert;
+    if (client_cert && *client_cert)
+      ssl.keyStore = client_cert;
+    if (client_key && *client_key)
+      ssl.privateKey = client_key;
+    opts.ssl = &ssl;
+  }
 
   pthread_mutex_unlock(&g_conns_mu);
   MQTTAsync_connect(g_conns[idx].client, &opts);
@@ -324,12 +341,14 @@ static void dispatch_line(char *line) {
   char *cmd = strtok(line, "\t");
   if (!cmd)
     return;
-  char *a[5] = {0};
-  for (int i = 0; i < 5; i++)
+  char *a[9] = {0};
+  for (int i = 0; i < 9; i++)
     a[i] = strtok(NULL, "\t");
 
   if (!strcmp(cmd, "connect") && a[4])
-    cmd_connect(atoi(a[0]), a[1], atoi(a[2]), a[3], atoi(a[4]));
+    cmd_connect(atoi(a[0]), a[1], atoi(a[2]), a[3], atoi(a[4]),
+                a[5] ? atoi(a[5]) : 0, a[6] ? a[6] : "", a[7] ? a[7] : "",
+                a[8] ? a[8] : "");
   else if (!strcmp(cmd, "publish") && a[4])
     cmd_publish(atoi(a[0]), a[1], a[2], atoi(a[3]), atoi(a[4]));
   else if (!strcmp(cmd, "subscribe") && a[2])
